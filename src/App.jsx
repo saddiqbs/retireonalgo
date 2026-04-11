@@ -1,10 +1,33 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { WalletManager, WalletId, NetworkId } from '@txnlab/use-wallet'
+
+const RETIRE_ASA_ID = 2581523977
+const RETIRE_DECIMALS = 6
+const INDEXER_BASE = 'https://mainnet-idx.algonode.cloud'
 
 const manager = new WalletManager({
   wallets: [{ id: WalletId.PERA, options: { shouldShowSignTxnToast: false } }],
   network: NetworkId.MAINNET
 })
+
+async function getRetireBalance(address) {
+  try {
+    const res = await fetch(`${INDEXER_BASE}/v2/accounts/${address}/assets?asset-id=${RETIRE_ASA_ID}`)
+    if (!res.ok) return 0
+    const data = await res.json()
+    if (data.assets && data.assets.length > 0) {
+      return data.assets[0].amount / Math.pow(10, RETIRE_DECIMALS)
+    }
+    return 0
+  } catch { return 0 }
+}
+
+function formatBalance(amount) {
+  if (amount >= 1_000_000_000) return (amount / 1_000_000_000).toFixed(1) + 'B'
+  if (amount >= 1_000_000) return (amount / 1_000_000).toFixed(1) + 'M'
+  if (amount >= 1_000) return (amount / 1_000).toFixed(1) + 'K'
+  return amount.toFixed(2)
+}
 
 async function getNFDName(addr) {
   try {
@@ -30,6 +53,19 @@ export default function App() {
   } catch { return [] }
 })
   const [isExpanded, setIsExpanded] = useState(false)
+  const [retireBalance, setRetireBalance] = useState(null)
+
+  useEffect(() => {
+    if (wallets.length === 0) {
+      setRetireBalance(null)
+      return
+    }
+    async function fetchBalances() {
+      const balances = await Promise.all(wallets.map(w => getRetireBalance(w.address)))
+      setRetireBalance(balances.reduce((sum, b) => sum + b, 0))
+    }
+    fetchBalances()
+  }, [wallets])
 
   function saveWallets(list) {
   localStorage.setItem('connectedWallets', JSON.stringify(list))
@@ -86,6 +122,18 @@ return (
            }}>Connect wallet</button>
           ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              {retireBalance !== null && (
+                <div style={{
+                  background: retireBalance > 0 ? '#1a2830' : '#1e1e24',
+                  border: `1px solid ${retireBalance > 0 ? '#2a7840' : '#3a3a42'}`,
+                  padding: '6px 12px', borderRadius: '20px', fontSize: '13px',
+                  color: retireBalance > 0 ? '#7FDD9F' : '#6b6b78'
+                }}>
+                  {retireBalance > 0
+                    ? `${formatBalance(retireBalance)} $Retire`
+                    : 'No $Retire'}
+                </div>
+              )}
               <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', cursor: 'pointer' }}
                 onClick={() => setIsExpanded(!isExpanded)}>
                 {wallets.map(w => (
