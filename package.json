@@ -12,6 +12,7 @@
     "vite": "^8.0.4"
   },
   "dependencies": {
-    "@perawallet/connect": "^1.5.2"
+    "@perawallet/connect": "^1.5.2",
+    "js-sha3": "^0.8.0"
   }
 }
