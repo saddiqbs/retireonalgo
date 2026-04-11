@@ -4,7 +4,4 @@ export default defineConfig({
   define: {
     global: 'globalThis',
   },
-  optimizeDeps: {
-    exclude: ['@perawallet/connect'],
-  },
 })
