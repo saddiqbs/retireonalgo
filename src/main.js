@@ -1,4 +1,4 @@
-const PeraWalletConnect = window.PeraWalletConnect?.PeraWalletConnect || window.peraWalletConnect?.PeraWalletConnect;
+import { PeraWalletConnect } from '@perawallet/connect';
 
 const peraWallet = new PeraWalletConnect();
 
