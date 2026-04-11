@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>$Retire on Algo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a12; font-family: sans-serif; color: #CECBF6; min-height: 100vh; }
+    nav { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; padding: 16px 24px; border-bottom: 0.5px solid #2a2840; }
+    .nav-logo { font-size: 18px; font-weight: 500; color: #CECBF6; }
+    .nav-logo span { color: #7F77DD; }
+    .nav-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #connect-btn { background: #1a1830; border: 1px solid #534AB7; color: #AFA9EC; padding: 8px 20px; border-radius: 20px; font-size: 14px; cursor: pointer; }
+    #connect-btn:hover { background: #24204a; }
+    #wallet-info { display: none; align-items: center; gap: 8px; flex-wrap: wrap; position: relative; }
+    #wallets-container { display: flex; gap: 8px; flex-wrap: wrap; cursor: pointer; }
+    .wallet-pill { display: flex; align-items: center; gap: 8px; background: #1a1830; border: 1px solid #2a2840; padding: 6px 12px; border-radius: 20px; font-size: 13px; color: #7F77DD; }
+    .wallet-remove { color: #534AB7; cursor: pointer; font-size: 11px; padding: 0 2px; display: none; }
+    .wallet-remove:hover { color: #AFA9EC; }
+    .wallet-expanded .wallet-remove { display: inline; }
+    #wallet-actions { display: none; align-items: center; gap: 8px; }
+    .wallet-expanded #wallet-actions { display: flex; }
+    #add-wallet-btn { background: #1a1830; border: 1px solid #534AB7; color: #AFA9EC; padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer; }
+    #add-wallet-btn:hover { background: #24204a; }
+    #disconnect-all-btn { background: transparent; border: 1px solid #3a3060; color: #534AB7; padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+    #disconnect-all-btn:hover { border-color: #534AB7; color: #AFA9EC; }
+    .main { max-width: 1000px; margin: 0 auto; padding: 40px 24px; }
+    .welcome { text-align: center; padding: 80px 24px; }
+    .welcome h1 { font-size: 32px; font-weight: 500; color: #CECBF6; margin-bottom: 12px; }
+    .welcome p { font-size: 15px; color: #534AB7; line-height: 1.7; max-width: 400px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-logo">$<span>Retire</span> on Algo</div>
+    <div class="nav-right">
+      <button id="connect-btn">Connect wallet</button>
+      <div id="wallet-info">
+        <div id="wallets-container"></div>
+        <div id="wallet-actions">
+          <button id="add-wallet-btn">+ Add wallet</button>
+          <button id="disconnect-all-btn">Disconnect all</button>
+        </div>
+      </div>
+    </div>
+  </nav>
+  <div class="main">
+    <div class="welcome" id="welcome">
+      <h1>Your Algorand DeFi dashboard</h1>
+      <p>Connect your Pera wallet to see your positions, earnings, and the best pool opportunities on Algorand.</p>
+    </div>
+  </div>
+  <script>window.global = window;</script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
