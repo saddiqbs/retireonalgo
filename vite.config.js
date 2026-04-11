@@ -13,4 +13,18 @@ export default defineConfig({
       },
     }),
   ],
+  optimizeDeps: {
+    include: [
+      'js-sha3',
+      '@perawallet/connect',
+      '@walletconnect/client',
+      '@walletconnect/types',
+    ],
+  },
+  build: {
+    commonjsOptions: {
+      transformMixedEsModules: true,
+      include: [/js-sha3/, /node_modules/],
+    },
+  },
 })
