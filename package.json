@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@perawallet/connect": "^1.5.2",
+    "@tinymanorg/tinyman-js-sdk": "^5.1.4",
     "@txnlab/use-wallet": "^4.6.0",
     "algosdk": "^3.5.2",
     "react": "^19.2.4",

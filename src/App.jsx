@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { WalletManager, WalletId, NetworkId } from '@txnlab/use-wallet'
+import { fetchPositions, formatUSD } from './pools'
 
 const RETIRE_ASA_ID = 2581523977
 const RETIRE_DECIMALS = 6
@@ -54,10 +55,13 @@ export default function App() {
 })
   const [isExpanded, setIsExpanded] = useState(false)
   const [retireBalance, setRetireBalance] = useState(null)
+  const [positions, setPositions] = useState([])
+  const [loadingPositions, setLoadingPositions] = useState(false)
 
   useEffect(() => {
     if (wallets.length === 0) {
       setRetireBalance(null)
+      setPositions([])
       return
     }
     async function fetchBalances() {
@@ -65,6 +69,12 @@ export default function App() {
       setRetireBalance(balances.reduce((sum, b) => sum + b, 0))
     }
     fetchBalances()
+
+    setLoadingPositions(true)
+    setPositions([])
+    fetchPositions(wallets.map(w => w.address), setPositions)
+      .catch(() => setPositions([]))
+      .finally(() => setLoadingPositions(false))
   }, [wallets])
 
   function saveWallets(list) {
@@ -167,14 +177,79 @@ return (
         </div>
       </nav>
       <div style={{ maxWidth: '1000px', margin: '0 auto', padding: '40px 24px' }}>
-        <div style={{ textAlign: 'center', padding: '80px 24px' }}>
-          <h1 style={{ fontSize: '32px', fontWeight: 500, color: '#CECBF6', marginBottom: '12px' }}>
-            Your Algorand DeFi dashboard
-          </h1>
-          <p style={{ fontSize: '15px', color: '#534AB7', lineHeight: 1.7, maxWidth: '400px', margin: '0 auto' }}>
-            Connect your Pera wallet to see your positions, earnings, and the best pool opportunities on Algorand.
-          </p>
-        </div>
+        {wallets.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '80px 24px' }}>
+            <h1 style={{ fontSize: '32px', fontWeight: 500, color: '#CECBF6', marginBottom: '12px' }}>
+              Your Algorand DeFi dashboard
+            </h1>
+            <p style={{ fontSize: '15px', color: '#534AB7', lineHeight: 1.7, maxWidth: '400px', margin: '0 auto' }}>
+              Connect your Pera wallet to see your positions, earnings, and the best pool opportunities on Algorand.
+            </p>
+          </div>
+        ) : (
+          <div>
+            <h2 style={{ fontSize: '20px', fontWeight: 500, color: '#CECBF6', marginBottom: '20px' }}>
+              My Positions
+            </h2>
+            {loadingPositions ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: '#534AB7' }}>
+                Loading positions...
+              </div>
+            ) : positions.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '40px', color: '#534AB7', fontSize: '14px' }}>
+                No liquidity pool positions found
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gap: '12px' }}>
+                {positions.map(p => (
+                  <div key={`${p.protocol}-${p.poolId}`} style={{
+                    background: '#12111f', border: '1px solid #2a2840', borderRadius: '12px',
+                    padding: '16px 20px', display: 'flex', alignItems: 'center',
+                    justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <span style={{
+                        fontSize: '11px', color: '#AFA9EC', background: '#1a1830',
+                        border: '1px solid #2a2840', padding: '2px 8px', borderRadius: '6px'
+                      }}>{p.protocol}</span>
+                      <span style={{ fontSize: '15px', fontWeight: 500, color: '#CECBF6' }}>
+                        {p.asset1} / {p.asset2}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>Your Value</div>
+                        <div style={{ fontSize: '15px', fontWeight: 500, color: '#CECBF6' }}>
+                          {formatUSD(p.usdValue)}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>Pool TVL</div>
+                        <div style={{ fontSize: '14px', color: '#7F77DD' }}>
+                          {formatUSD(p.tvl)}
+                        </div>
+                      </div>
+                      {p.apr > 0 && (
+                        <div style={{ textAlign: 'right' }}>
+                          <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APR</div>
+                          <div style={{ fontSize: '14px', color: '#7FDD9F' }}>
+                            {p.apr.toFixed(1)}%
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>Share</div>
+                        <div style={{ fontSize: '14px', color: '#7F77DD' }}>
+                          {(p.share * 100).toFixed(2)}%
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
