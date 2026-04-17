@@ -386,23 +386,41 @@ async function fetchV2PoolStats(assetId) {
 export async function fetchTopPools() {
   const pools = []
 
-  // Tinyman V2 — SDK derives pool address per token, analytics API gives APY/TVL
+  // Tinyman V1 — listing endpoint returns pools sorted by TVL with full APY data.
+  // Scan the top ~200 (by TVL) and keep any with meaningful APY.
+  try {
+    const res = await fetch(`${ANALYTICS_API}/pools/?limit=200`)
+    if (res.ok) {
+      const data = await res.json()
+      ;(data.results || []).forEach(p => {
+        const apy = Number(p.total_annual_percentage_yield) || 0
+        const tvl = Number(p.liquidity_in_usd) || 0
+        if (tvl < 1000 || apy <= 0) return
+        const a1 = p.asset_1?.unit_name || '?'
+        const a2 = p.asset_2?.unit_name || '?'
+        pools.push({ pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V1' })
+      })
+    }
+  } catch {}
+
+  // Tinyman V2 — not in the listing endpoint; must derive each pool address via
+  // SDK then query analytics by address. Uses a curated token whitelist.
   const v2 = await Promise.all(V2_CANDIDATE_TOKENS.map(fetchV2PoolStats))
   pools.push(...v2.filter(Boolean))
 
-  // Pact — direct API listing (supports V2 filtering and APR ordering)
+  // Pact — direct API listing (supports APR ordering)
   try {
     const res = await fetch('https://api.pact.fi/api/pools?limit=15&ordering=-apr_7d&is_verified=true')
     if (res.ok) {
       const data = await res.json()
       ;(data.results || [])
-        .filter(p => Number(p.tvl_usd) > 500 && Number(p.apr_7d) > 0)
+        .filter(p => Number(p.tvl_usd) > 1000 && Number(p.apr_7d) > 0)
         .forEach(p => {
           const pair = `${p.primary_asset?.unit_name || '?'} / ${p.secondary_asset?.unit_name || '?'}`
-          if (pools.some(ep => ep.pair === pair)) return
+          if (pools.some(ep => ep.pair === pair && ep.platform === 'Pact')) return
           pools.push({
             pair,
-            apy: Number(p.apr_7d) || 0, // Pact's apr_7d already approximates APY closely
+            apy: Number(p.apr_7d) || 0,
             tvl: Number(p.tvl_usd) || 0,
             platform: 'Pact',
           })
