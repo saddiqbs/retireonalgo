@@ -6,33 +6,72 @@ const ALGOD_BASE = 'https://mainnet-api.algonode.cloud'
 
 const algodClient = new algosdk.Algodv2('', ALGOD_BASE, '')
 
-// Get ALGO/USD price from CoinGecko (cached for session)
-let _algoUsdCache = null
-async function getAlgoUsdPrice() {
-  if (_algoUsdCache !== null) return _algoUsdCache
+// Batch USD prices from Vestige Labs API (denominated in USDC).
+// Cached per asset ID with a short TTL so reloads don't hammer Vestige —
+// their own edge cache is 60s, so we match that as the floor.
+const USDC_ID = 31566704
+const VESTIGE_API = 'https://api.vestigelabs.org'
+const PRICE_CACHE_KEY = 'vestigePriceCache'
+const PRICE_TTL_MS = 60_000
+const _priceMemCache = new Map() // assetId -> { price, expires }
+
+function loadPriceCache() {
+  if (_priceMemCache.size > 0) return
   try {
-    const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=algorand&vs_currencies=usd')
-    if (!res.ok) return 0
-    const data = await res.json()
-    _algoUsdCache = data.algorand?.usd || 0
-    return _algoUsdCache
-  } catch { return 0 }
+    const raw = localStorage.getItem(PRICE_CACHE_KEY)
+    if (!raw) return
+    const now = Date.now()
+    for (const [id, entry] of Object.entries(JSON.parse(raw))) {
+      if (entry.expires > now) _priceMemCache.set(Number(id), entry)
+    }
+  } catch { /* ignore corrupt cache */ }
 }
 
-// Get asset price in USD via its Tinyman V2 ALGO pool
-async function getAssetUsdPrice(assetId, decimals, algoUsd) {
-  if (assetId === 0) return algoUsd
+function savePriceCache() {
   try {
-    const pool = await poolUtils.v2.getPoolInfo({
-      client: algodClient, network: 'mainnet', asset1ID: assetId, asset2ID: 0
-    })
-    if (pool.status !== 'ready') return 0
-    const res = await poolUtils.v2.getPoolReserves(algodClient, pool)
-    const assetAmount = Number(res.asset1) / Math.pow(10, decimals)
-    const algoAmount = Number(res.asset2) / 1e6
-    if (assetAmount <= 0) return 0
-    return (algoAmount / assetAmount) * algoUsd
-  } catch { return 0 }
+    const obj = {}
+    for (const [id, entry] of _priceMemCache) obj[id] = entry
+    localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(obj))
+  } catch { /* quota full or storage unavailable */ }
+}
+
+async function getUsdPrices(assetIds) {
+  loadPriceCache()
+  const now = Date.now()
+  const unique = [...new Set(assetIds)]
+  const need = unique.filter(id => {
+    const e = _priceMemCache.get(id)
+    return !e || e.expires <= now
+  })
+
+  if (need.length > 0) {
+    try {
+      const url = `${VESTIGE_API}/assets/price?asset_ids=${need.join(',')}&denominating_asset_id=${USDC_ID}&network_id=0`
+      const res = await fetch(url)
+      if (res.ok) {
+        const data = await res.json()
+        const expires = Date.now() + PRICE_TTL_MS
+        for (const row of data) {
+          _priceMemCache.set(row.asset_id, { price: Number(row.price) || 0, expires })
+        }
+      }
+    } catch { /* prices remain unknown */ }
+    // Record misses as zero with same TTL to prevent hammering on unknown assets
+    const expires = Date.now() + PRICE_TTL_MS
+    for (const id of need) {
+      if (!_priceMemCache.has(id) || _priceMemCache.get(id).expires <= now) {
+        _priceMemCache.set(id, { price: 0, expires })
+      }
+    }
+    savePriceCache()
+  }
+
+  return Object.fromEntries(assetIds.map(id => [id, _priceMemCache.get(id)?.price || 0]))
+}
+
+async function getAlgoUsdPrice() {
+  const prices = await getUsdPrices([0])
+  return prices[0]
 }
 
 async function getAllAssets(address) {
@@ -95,24 +134,28 @@ async function lookupPool(lp) {
       const reserves = await poolUtils.v2.getPoolReserves(algodClient, pool)
       const share = poolUtils.getPoolShare(reserves.issuedLiquidity, BigInt(lp.amount))
 
-      const [info1, info2] = await Promise.all([getAssetInfo(asset1ID), getAssetInfo(asset2ID)])
-      const dec1 = info1?.decimals || 0
-      const dec2 = info2?.decimals || 0
-
-      const algoUsd = await getAlgoUsdPrice()
-      const [price1, price2] = await Promise.all([
-        getAssetUsdPrice(asset1ID, dec1, algoUsd),
-        getAssetUsdPrice(asset2ID, dec2, algoUsd)
-      ])
-      const tvl = (Number(reserves.asset1) / Math.pow(10, dec1)) * price1
-              + (Number(reserves.asset2) / Math.pow(10, dec2)) * price2
+      // Get TVL and APR from analytics API using pool address
+      const addr = pool.account.address().toString()
+      const analyticsRes = await fetch(`${ANALYTICS_API}/pools/${addr}`)
+      let tvl = 0, apr = 0, asset1Name = '?', asset2Name = '?'
+      if (analyticsRes.ok) {
+        const aData = await analyticsRes.json()
+        tvl = Number(aData.liquidity_in_usd) || 0
+        apr = Number(aData.annual_percentage_rate) || 0
+        asset1Name = aData.asset_1?.unit_name || aData.asset_1?.name || '?'
+        asset2Name = aData.asset_2?.unit_name || aData.asset_2?.name || '?'
+      } else {
+        // Fallback to on-chain names
+        const [info1, info2] = await Promise.all([getAssetInfo(asset1ID), getAssetInfo(asset2ID)])
+        asset1Name = info1?.['unit-name'] || info1?.name || '?'
+        asset2Name = info2?.['unit-name'] || info2?.name || '?'
+      }
       const usdValue = tvl * share
 
       return {
         protocol: 'Tinyman V2', poolId: lp.assetId,
-        asset1: info1?.['unit-name'] || info1?.name || '?',
-        asset2: info2?.['unit-name'] || info2?.name || '?',
-        share, usdValue, tvl, apr: 0,
+        asset1: asset1Name, asset2: asset2Name,
+        share, usdValue, tvl, apr,
       }
     } catch (e) {
       console.error('Tinyman V2 pool error:', e)
@@ -150,13 +193,10 @@ async function lookupPool(lp) {
       const dec1 = info1?.decimals || 0
       const dec2 = info2?.decimals || 0
 
-      const algoUsd = await getAlgoUsdPrice()
-      const [price1, price2] = await Promise.all([
-        getAssetUsdPrice(reserves[0].assetId, dec1, algoUsd),
-        getAssetUsdPrice(reserves[1].assetId, dec2, algoUsd)
-      ])
-      const tvl = (reserves[0].amount / Math.pow(10, dec1)) * price1
-              + (reserves[1].amount / Math.pow(10, dec2)) * price2
+      // Batch-price both reserve assets in a single Vestige request
+      const prices = await getUsdPrices([reserves[0].assetId, reserves[1].assetId])
+      const tvl = (reserves[0].amount / Math.pow(10, dec1)) * prices[reserves[0].assetId]
+              + (reserves[1].amount / Math.pow(10, dec2)) * prices[reserves[1].assetId]
       const usdValue = tvl * share
 
       return {
@@ -193,14 +233,17 @@ function setCachedLpTokens(addresses, tokens) {
   localStorage.setItem(LP_CACHE_KEY, JSON.stringify({ key, tokens }))
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
 // Discover LP tokens from on-chain data
 async function discoverLpTokens(addresses) {
   const lpTokens = []
   for (const address of addresses) {
     const assets = await getAllAssets(address)
-    const held = assets.filter(a => a.amount > 0 && !a.deleted)
-    for (let i = 0; i < held.length; i += 30) {
-      const batch = held.slice(i, i + 30)
+    // Filter: must have balance, not deleted, skip likely NFTs (amount=1)
+    const held = assets.filter(a => a.amount > 1 && !a.deleted)
+    for (let i = 0; i < held.length; i += 10) {
+      const batch = held.slice(i, i + 10)
       const infos = await Promise.all(batch.map(a => getAssetInfo(a['asset-id'])))
       for (let j = 0; j < batch.length; j++) {
         const info = infos[j]
@@ -215,6 +258,8 @@ async function discoverLpTokens(addresses) {
           decimals: info.decimals || 0,
         })
       }
+      // Throttle to avoid 429s
+      if (i + 10 < held.length) await sleep(100)
     }
   }
   return lpTokens
@@ -288,6 +333,86 @@ export async function fetchPositions(addresses, onPosition) {
   }
 
   return positions
+}
+
+const ANALYTICS_API = 'https://mainnet.analytics.tinyman.org/api/v1'
+
+// Candidate tokens for V2 ALGO pool discovery. Tinyman Analytics' listing
+// endpoint only returns V1 pools, so we derive V2 pool addresses via the SDK
+// for each token, then query the analytics API per-address for 7D APY data.
+const V2_CANDIDATE_TOKENS = [
+  287867876,   // OPUL
+  3203964481,  // FOLKS
+  2582294183,  // GONNA
+  1058926737,  // WBTC (xBacked)
+  386195940,   // goBTC
+  386192725,   // goETH
+  2751733,     // RIO
+  31566704,    // USDC
+  312769,      // USDt
+  470842789,   // DEFLY
+  523683256,   // AKTA
+  1138500612,  // ORA
+  796425061,   // coop
+  283820866,   // XET
+  567485181,   // LOUD
+  226701642,   // YLDY
+  1284444444,  // NIKO
+  388592191,   // GARD
+  793124631,   // gALGO
+]
+
+// Fetch a single Tinyman V2 pool's analytics (pair, APY, TVL)
+async function fetchV2PoolStats(assetId) {
+  try {
+    const pool = await poolUtils.v2.getPoolInfo({
+      client: algodClient, network: 'mainnet', asset1ID: assetId, asset2ID: 0,
+    })
+    if (pool.status !== 'ready') return null
+    const addr = pool.account.address().toString()
+    const res = await fetch(`${ANALYTICS_API}/pools/${addr}/`)
+    if (!res.ok) return null
+    const data = await res.json()
+    const apy = Number(data.total_annual_percentage_yield) || 0
+    const tvl = Number(data.liquidity_in_usd) || 0
+    if (tvl < 500 || apy <= 0) return null
+    const a1 = data.asset_1?.unit_name || '?'
+    const a2 = data.asset_2?.unit_name || 'ALGO'
+    return { pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V2' }
+  } catch { return null }
+}
+
+// Fetch top pools for opportunities section, ranked by 7D APY (incl. gov/staking rewards)
+export async function fetchTopPools() {
+  const pools = []
+
+  // Tinyman V2 — SDK derives pool address per token, analytics API gives APY/TVL
+  const v2 = await Promise.all(V2_CANDIDATE_TOKENS.map(fetchV2PoolStats))
+  pools.push(...v2.filter(Boolean))
+
+  // Pact — direct API listing (supports V2 filtering and APR ordering)
+  try {
+    const res = await fetch('https://api.pact.fi/api/pools?limit=15&ordering=-apr_7d&is_verified=true')
+    if (res.ok) {
+      const data = await res.json()
+      ;(data.results || [])
+        .filter(p => Number(p.tvl_usd) > 500 && Number(p.apr_7d) > 0)
+        .forEach(p => {
+          const pair = `${p.primary_asset?.unit_name || '?'} / ${p.secondary_asset?.unit_name || '?'}`
+          if (pools.some(ep => ep.pair === pair)) return
+          pools.push({
+            pair,
+            apy: Number(p.apr_7d) || 0, // Pact's apr_7d already approximates APY closely
+            tvl: Number(p.tvl_usd) || 0,
+            platform: 'Pact',
+          })
+        })
+    }
+  } catch {}
+
+  // Sort by APY descending, return top 15
+  pools.sort((a, b) => b.apy - a.apy)
+  return pools.slice(0, 15)
 }
 
 export { formatUSD }

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { WalletManager, WalletId, NetworkId } from '@txnlab/use-wallet'
-import { fetchPositions, formatUSD } from './pools'
+import { fetchPositions, fetchTopPools, formatUSD } from './pools'
 
 const RETIRE_ASA_ID = 2581523977
 const RETIRE_DECIMALS = 6
@@ -57,6 +57,12 @@ export default function App() {
   const [retireBalance, setRetireBalance] = useState(null)
   const [positions, setPositions] = useState([])
   const [loadingPositions, setLoadingPositions] = useState(false)
+  const [topPools, setTopPools] = useState([])
+  const [showPoolCount, setShowPoolCount] = useState(3)
+
+  useEffect(() => {
+    fetchTopPools().then(setTopPools)
+  }, [])
 
   useEffect(() => {
     if (wallets.length === 0) {
@@ -188,6 +194,26 @@ return (
           </div>
         ) : (
           <div>
+            {/* Summary Strip */}
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+              gap: '12px', marginBottom: '32px'
+            }}>
+              {[
+                { label: 'Total Value', value: formatUSD(positions.reduce((s, p) => s + p.usdValue, 0)), color: '#CECBF6' },
+                { label: 'Active Pools', value: positions.length, color: '#7F77DD' },
+                { label: '$Retire Held', value: retireBalance !== null ? formatBalance(retireBalance) : '...', color: retireBalance > 0 ? '#7FDD9F' : '#6b6b78' },
+              ].map((stat, i) => (
+                <div key={i} style={{
+                  background: '#12111f', border: '1px solid #2a2840', borderRadius: '12px',
+                  padding: '16px 20px', textAlign: 'center'
+                }}>
+                  <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '6px' }}>{stat.label}</div>
+                  <div style={{ fontSize: '20px', fontWeight: 600, color: stat.color }}>{stat.value}</div>
+                </div>
+              ))}
+            </div>
+
             <h2 style={{ fontSize: '20px', fontWeight: 500, color: '#CECBF6', marginBottom: '20px' }}>
               My Positions
             </h2>
@@ -231,9 +257,9 @@ return (
                       </div>
                       {p.apr > 0 && (
                         <div style={{ textAlign: 'right' }}>
-                          <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APR</div>
+                          <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APY</div>
                           <div style={{ fontSize: '14px', color: '#7FDD9F' }}>
-                            {p.apr.toFixed(1)}%
+                            {((Math.pow(1 + p.apr / 365, 365) - 1) * 100).toFixed(1)}%
                           </div>
                         </div>
                       )}
@@ -250,6 +276,103 @@ return (
             )}
           </div>
         )}
+        {/* Top Opportunities */}
+        {topPools.length > 0 && (
+          <div style={{ marginTop: '48px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '20px' }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 500, color: '#CECBF6', margin: 0 }}>
+                Top Opportunities
+              </h2>
+              <span style={{ fontSize: '11px', color: '#1a2830', background: '#7FDD9F',
+                padding: '3px 10px', borderRadius: '10px', fontWeight: 600 }}>
+                $RETIRE HOLDERS ONLY
+              </span>
+            </div>
+            <div style={{
+              position: 'relative',
+              display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px',
+              ...(retireBalance <= 0 ? { filter: 'blur(6px)', pointerEvents: 'none', userSelect: 'none' } : {})
+            }}>
+              {topPools.slice(0, showPoolCount).map((pool, i) => (
+                <div key={i} style={{
+                  background: '#12111f', border: '1px solid #2a2840', borderRadius: '12px',
+                  padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px'
+                }}>
+                  <div style={{ fontSize: '15px', fontWeight: 500, color: '#CECBF6' }}>{pool.pair}</div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APY</div>
+                      <div style={{ fontSize: '18px', fontWeight: 600, color: '#7FDD9F' }}>
+                        {(pool.apy * 100).toFixed(1)}%
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>TVL</div>
+                      <div style={{ fontSize: '14px', color: '#7F77DD' }}>{formatUSD(pool.tvl)}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#534AB7' }}>via {pool.platform}</div>
+                </div>
+              ))}
+            </div>
+            {retireBalance > 0 && showPoolCount < topPools.length && (
+              <div style={{ textAlign: 'center', marginTop: '16px' }}>
+                <button onClick={() => setShowPoolCount(prev => Math.min(prev === 3 ? 9 : 15, topPools.length))}
+                  style={{
+                    background: '#1a1830', border: '1px solid #2a2840', color: '#7F77DD',
+                    padding: '8px 24px', borderRadius: '20px', fontSize: '13px', cursor: 'pointer'
+                  }}>
+                  Show more pools
+                </button>
+              </div>
+            )}
+            {retireBalance <= 0 && (
+              <div style={{
+                textAlign: 'center', marginTop: '-80px', position: 'relative', zIndex: 1,
+                padding: '20px', color: '#7F77DD', fontSize: '14px'
+              }}>
+                Hold $Retire to unlock top opportunities
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Get $Retire Section */}
+        <div style={{ marginTop: '48px' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: 500, color: '#CECBF6', marginBottom: '20px' }}>
+            Get $Retire
+          </h2>
+          <div style={{
+            background: '#12111f', border: '1px solid #2a2840', borderRadius: '12px',
+            padding: '28px', display: 'flex', flexWrap: 'wrap', gap: '28px',
+            alignItems: 'center', justifyContent: 'space-between'
+          }}>
+            <div style={{ flex: '1 1 280px' }}>
+              <p style={{ fontSize: '15px', color: '#CECBF6', margin: '0 0 16px 0', lineHeight: 1.6 }}>
+                Hold $Retire to unlock exclusive pool insights and be part of the Algorand DeFi community.
+              </p>
+              <ul style={{ margin: 0, padding: '0 0 0 18px', color: '#7F77DD', fontSize: '13px', lineHeight: 2 }}>
+                <li>Unlock Top Opportunities section</li>
+                <li>Access curated high-APY pool data</li>
+                <li>Support the Algorand DeFi ecosystem</li>
+              </ul>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', flex: '0 0 auto' }}>
+              <a href="https://app.tinyman.org/#/swap?asset_in=0&asset_out=2581523977"
+                target="_blank" rel="noopener noreferrer" style={{
+                  display: 'inline-block', background: '#534AB7', color: '#fff',
+                  padding: '10px 28px', borderRadius: '20px', fontSize: '14px',
+                  textDecoration: 'none', textAlign: 'center', fontWeight: 500
+                }}>Swap on Tinyman</a>
+              <a href="https://vestige.fi/asset/2581523977"
+                target="_blank" rel="noopener noreferrer" style={{
+                  display: 'inline-block', background: '#1a1830', border: '1px solid #534AB7',
+                  color: '#AFA9EC', padding: '10px 28px', borderRadius: '20px', fontSize: '14px',
+                  textDecoration: 'none', textAlign: 'center', fontWeight: 500
+                }}>View on Vestige</a>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

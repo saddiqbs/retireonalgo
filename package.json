@@ -2,6 +2,7 @@
   "name": "retireonalgo-react",
   "private": true,
   "version": "0.0.0",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "postinstall": "node scripts/patch-walletconnect.js",
@@ -17,11 +18,11 @@
     "@txnlab/use-wallet": "^4.6.0",
     "algosdk": "^3.5.2",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "vite-plugin-node-polyfills": "^0.26.0"
+    "react-dom": "^19.2.4"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.31.2",
+    "vite-plugin-node-polyfills": "^0.26.0",
     "@eslint/js": "^9.39.4",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
