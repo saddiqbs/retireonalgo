@@ -61,7 +61,11 @@ export default function App() {
   const [showPoolCount, setShowPoolCount] = useState(3)
 
   useEffect(() => {
-    fetchTopPools().then(setTopPools)
+    // Don't clobber a populated list if a subsequent fetch returns empty
+    // (transient analytics API failures shouldn't hide the section).
+    fetchTopPools().then(pools => {
+      if (pools && pools.length > 0) setTopPools(pools)
+    })
   }, [])
 
   useEffect(() => {
