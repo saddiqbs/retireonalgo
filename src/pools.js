@@ -340,7 +340,7 @@ const ANALYTICS_API = 'https://mainnet.analytics.tinyman.org/api/v1'
 // Top Opportunities result cache. The full scan (especially V2 discovery) is
 // expensive — hundreds of analytics fetches — so we cache the final ranked list
 // in localStorage and let the first visitor per TTL window do the work.
-const TOP_POOLS_CACHE_KEY = 'topPoolsCache_v2'
+const TOP_POOLS_CACHE_KEY = 'topPoolsCache_v3'
 const TOP_POOLS_TTL_MS = 5 * 60_000 // 5 min — APY/TVL don't move fast
 
 function loadTopPoolsCache() {
@@ -386,7 +386,10 @@ async function fetchV2PoolByAddress(poolAddr) {
     if (tvl < 1000 || apy <= 0) return null
     const a1 = data.asset_1?.unit_name || '?'
     const a2 = data.asset_2?.unit_name || '?'
-    return { pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V2' }
+    return {
+      pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V2',
+      url: `https://app.tinyman.org/pool/${poolAddr}`,
+    }
   } catch { return null }
 }
 
@@ -413,7 +416,10 @@ export async function fetchTopPools() {
         if (tvl < 1000 || apy <= 0) return
         const a1 = p.asset_1?.unit_name || '?'
         const a2 = p.asset_2?.unit_name || '?'
-        pools.push({ pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V1' })
+        pools.push({
+          pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V1',
+          url: p.address ? `https://app.tinyman.org/pool/${p.address}` : null,
+        })
       })
     }
   } catch {}
@@ -441,6 +447,7 @@ export async function fetchTopPools() {
             apy: Number(p.apr_7d) || 0,
             tvl: Number(p.tvl_usd) || 0,
             platform: 'Pact',
+            url: p.on_chain_id ? `https://app.pact.fi/add-liquidity/${p.on_chain_id}` : null,
           })
         })
     }

@@ -297,27 +297,45 @@ return (
               display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px',
               ...(retireBalance <= 0 ? { filter: 'blur(6px)', pointerEvents: 'none', userSelect: 'none' } : {})
             }}>
-              {topPools.slice(0, showPoolCount).map((pool, i) => (
-                <div key={i} style={{
+              {topPools.slice(0, showPoolCount).map((pool, i) => {
+                const cardStyle = {
                   background: '#12111f', border: '1px solid #2a2840', borderRadius: '12px',
-                  padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px'
-                }}>
-                  <div style={{ fontSize: '15px', fontWeight: 500, color: '#CECBF6' }}>{pool.pair}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APY</div>
-                      <div style={{ fontSize: '18px', fontWeight: 600, color: '#7FDD9F' }}>
-                        {(pool.apy * 100).toFixed(1)}%
+                  padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px',
+                  textDecoration: 'none', color: 'inherit',
+                  transition: 'border-color 0.15s, transform 0.15s',
+                  cursor: pool.url ? 'pointer' : 'default',
+                }
+                const inner = (
+                  <>
+                    <div style={{ fontSize: '15px', fontWeight: 500, color: '#CECBF6' }}>{pool.pair}</div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <div>
+                        <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>APY</div>
+                        <div style={{ fontSize: '18px', fontWeight: 600, color: '#7FDD9F' }}>
+                          {(pool.apy * 100).toFixed(1)}%
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>TVL</div>
+                        <div style={{ fontSize: '14px', color: '#7F77DD' }}>{formatUSD(pool.tvl)}</div>
                       </div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '11px', color: '#534AB7', marginBottom: '2px' }}>TVL</div>
-                      <div style={{ fontSize: '14px', color: '#7F77DD' }}>{formatUSD(pool.tvl)}</div>
+                    <div style={{ fontSize: '11px', color: '#534AB7' }}>
+                      via {pool.platform}{pool.url ? ' ↗' : ''}
                     </div>
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#534AB7' }}>via {pool.platform}</div>
-                </div>
-              ))}
+                  </>
+                )
+                return pool.url ? (
+                  <a key={i} href={pool.url} target="_blank" rel="noopener noreferrer"
+                    style={cardStyle}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#534AB7' }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#2a2840' }}>
+                    {inner}
+                  </a>
+                ) : (
+                  <div key={i} style={cardStyle}>{inner}</div>
+                )
+              })}
             </div>
             {retireBalance > 0 && showPoolCount < topPools.length && (
               <div style={{ textAlign: 'center', marginTop: '16px' }}>
