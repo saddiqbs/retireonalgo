@@ -337,62 +337,77 @@ export async function fetchPositions(addresses, onPosition) {
 
 const ANALYTICS_API = 'https://mainnet.analytics.tinyman.org/api/v1'
 
-// Candidate tokens for V2 ALGO pool discovery. Tinyman Analytics' listing
-// endpoint only returns V1 pools, so we derive V2 pool addresses via the SDK
-// for each token, then query the analytics API per-address for 7D APY data.
-const V2_CANDIDATE_TOKENS = [
-  287867876,   // OPUL
-  3203964481,  // FOLKS
-  2582294183,  // GONNA
-  1058926737,  // WBTC (xBacked)
-  386195940,   // goBTC
-  386192725,   // goETH
-  2751733,     // RIO
-  31566704,    // USDC
-  312769,      // USDt
-  470842789,   // DEFLY
-  523683256,   // AKTA
-  1138500612,  // ORA
-  796425061,   // coop
-  283820866,   // XET
-  567485181,   // LOUD
-  226701642,   // YLDY
-  1284444444,  // NIKO
-  388592191,   // GARD
-  793124631,   // gALGO
-]
+// Top Opportunities result cache. The full scan (especially V2 discovery) is
+// expensive — hundreds of analytics fetches — so we cache the final ranked list
+// in localStorage and let the first visitor per TTL window do the work.
+const TOP_POOLS_CACHE_KEY = 'topPoolsCache_v2'
+const TOP_POOLS_TTL_MS = 5 * 60_000 // 5 min — APY/TVL don't move fast
 
-// Fetch a single Tinyman V2 pool's analytics (pair, APY, TVL)
-async function fetchV2PoolStats(assetId) {
+function loadTopPoolsCache() {
   try {
-    const pool = await poolUtils.v2.getPoolInfo({
-      client: algodClient, network: 'mainnet', asset1ID: assetId, asset2ID: 0,
-    })
-    if (pool.status !== 'ready') return null
-    const addr = pool.account.address().toString()
-    const res = await fetch(`${ANALYTICS_API}/pools/${addr}/`)
+    const raw = localStorage.getItem(TOP_POOLS_CACHE_KEY)
+    if (!raw) return null
+    const { expires, pools } = JSON.parse(raw)
+    if (expires > Date.now()) return pools
+  } catch {}
+  return null
+}
+
+function saveTopPoolsCache(pools) {
+  try {
+    localStorage.setItem(TOP_POOLS_CACHE_KEY, JSON.stringify({
+      expires: Date.now() + TOP_POOLS_TTL_MS, pools,
+    }))
+  } catch {}
+}
+
+// Bounded-concurrency map. Limits parallel fetches so we don't get rate-limited
+// by the analytics API or Algonode indexer.
+async function mapPool(items, fn, concurrency = 10) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++
+      results[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+async function fetchV2PoolByAddress(poolAddr) {
+  try {
+    const res = await fetch(`${ANALYTICS_API}/pools/${poolAddr}/`)
     if (!res.ok) return null
     const data = await res.json()
     const apy = Number(data.total_annual_percentage_yield) || 0
     const tvl = Number(data.liquidity_in_usd) || 0
-    if (tvl < 500 || apy <= 0) return null
+    if (tvl < 1000 || apy <= 0) return null
     const a1 = data.asset_1?.unit_name || '?'
-    const a2 = data.asset_2?.unit_name || 'ALGO'
+    const a2 = data.asset_2?.unit_name || '?'
     return { pair: `${a1} / ${a2}`, apy, tvl, platform: 'Tinyman V2' }
   } catch { return null }
 }
 
 // Fetch top pools for opportunities section, ranked by 7D APY (incl. gov/staking rewards)
 export async function fetchTopPools() {
+  const cached = loadTopPoolsCache()
+  if (cached) return cached
+
   const pools = []
+  const v2Addrs = []
 
   // Tinyman V1 — listing endpoint returns pools sorted by TVL with full APY data.
   // Scan the top ~200 (by TVL) and keep any with meaningful APY.
+  // Each V1 pool row also carries a `v2_address` when a V2 counterpart exists —
+  // we harvest those addresses here to drive V2 discovery below.
   try {
-    const res = await fetch(`${ANALYTICS_API}/pools/?limit=200`)
+    const res = await fetch(`${ANALYTICS_API}/pools/?limit=200&ordering=-liquidity_in_usd`)
     if (res.ok) {
       const data = await res.json()
       ;(data.results || []).forEach(p => {
+        if (p.v2_address) v2Addrs.push(p.v2_address)
         const apy = Number(p.total_annual_percentage_yield) || 0
         const tvl = Number(p.liquidity_in_usd) || 0
         if (tvl < 1000 || apy <= 0) return
@@ -403,10 +418,13 @@ export async function fetchTopPools() {
     }
   } catch {}
 
-  // Tinyman V2 — not in the listing endpoint; must derive each pool address via
-  // SDK then query analytics by address. Uses a curated token whitelist.
-  const v2 = await Promise.all(V2_CANDIDATE_TOKENS.map(fetchV2PoolStats))
-  pools.push(...v2.filter(Boolean))
+  // Tinyman V2 — analytics API has no V2 listing, but each V1 pool row exposes
+  // a `v2_address` for its V2 counterpart. Fetch those addresses in parallel
+  // (bounded) to pick up V2 pools that are ranked by their V1 pair's TVL.
+  try {
+    const v2 = await mapPool(v2Addrs, fetchV2PoolByAddress, 10)
+    pools.push(...v2.filter(Boolean))
+  } catch {}
 
   // Pact — direct API listing (supports APR ordering)
   try {
@@ -430,7 +448,11 @@ export async function fetchTopPools() {
 
   // Sort by APY descending, return top 15
   pools.sort((a, b) => b.apy - a.apy)
-  return pools.slice(0, 15)
+  const top = pools.slice(0, 15)
+  // Only cache non-empty results so a transient API failure doesn't hide the
+  // section for the next 5 minutes.
+  if (top.length > 0) saveTopPoolsCache(top)
+  return top
 }
 
 export { formatUSD }
