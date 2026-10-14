@@ -340,8 +340,8 @@ const ANALYTICS_API = 'https://mainnet.analytics.tinyman.org/api/v1'
 // Top Opportunities result cache. The full scan (especially V2 discovery) is
 // expensive — hundreds of analytics fetches — so we cache the final ranked list
 // in localStorage and let the first visitor per TTL window do the work.
-const TOP_POOLS_CACHE_KEY = 'topPoolsCache_v3'
-const TOP_POOLS_TTL_MS = 5 * 60_000 // 5 min — APY/TVL don't move fast
+const TOP_POOLS_CACHE_KEY = 'topPoolsCache_v13'
+const TOP_POOLS_TTL_MS = 30 * 60_000 // 30 min — APY/TVL don't move fast
 
 function loadTopPoolsCache() {
   try {
@@ -361,24 +361,100 @@ function saveTopPoolsCache(pools) {
   } catch {}
 }
 
-// Bounded-concurrency map. Limits parallel fetches so we don't get rate-limited
-// by the analytics API or Algonode indexer.
-async function mapPool(items, fn, concurrency = 10) {
+// Bounded-concurrency map with optional per-worker delay. Limits parallel
+// fetches so we don't get rate-limited by the analytics API or Algonode indexer.
+async function mapPool(items, fn, concurrency = 10, delayMs = 0) {
   const results = new Array(items.length)
   let cursor = 0
   const workers = Array.from({ length: concurrency }, async () => {
     while (cursor < items.length) {
       const i = cursor++
       results[i] = await fn(items[i])
+      if (delayMs && cursor < items.length) {
+        await new Promise(r => setTimeout(r, delayMs))
+      }
     }
   })
   await Promise.all(workers)
   return results
 }
 
+// Discover V2 pool addresses via Vestige: fetch top-N assets by TVL, then for
+// each, query Vestige for its Tinyman-V2 pools. This catches pools for tokens
+// that never had a V1 counterpart (FOLKS, GONNA, HAY, PHEZZIES, HOG, ...).
+async function discoverV2AddressesFromVestige() {
+  const addrSet = new Set()
+  try {
+    const assetRes = await fetch(
+      `${VESTIGE_API}/assets/list?network_id=0&limit=100&order_by=tvl&order_dir=desc&denominating_asset_id=${USDC_ID}`
+    )
+    if (!assetRes.ok) return []
+    const data = await assetRes.json()
+    const rows = Array.isArray(data) ? data : (data.results || [])
+    const assetIds = rows.map(a => a.id).filter(id => id && id !== 0 && id !== USDC_ID)
+
+    // Vestige orders pools by creation date (newest first), so querying just
+    // `asset_1_id=X` buries the real pairs under newer junk pools. Query the
+    // specific asset-pair combos we care about (X + ALGO, X + USDC) — higher
+    // asset ID is always asset_1, ALGO (0) and USDC are the common quote sides.
+    await mapPool(assetIds, async (id) => {
+      const pairs = [
+        { asset_1_id: id, asset_2_id: 0 },          // X / ALGO
+        { asset_1_id: id, asset_2_id: USDC_ID },    // X / USDC (if X > USDC)
+        { asset_1_id: USDC_ID, asset_2_id: id < USDC_ID ? id : null }, // USDC / X (if X < USDC)
+      ].filter(p => p.asset_2_id !== null)
+
+      for (const pair of pairs) {
+        try {
+          const r = await fetchVestige(
+            `${VESTIGE_API}/pools?network_id=0&provider_id=2&asset_1_id=${pair.asset_1_id}&asset_2_id=${pair.asset_2_id}`
+          )
+          if (!r.ok) continue
+          const d = await r.json()
+          for (const p of d.results || []) {
+            if (!p.address) continue
+            if (!p.asset_1_supply || !p.asset_2_supply) continue
+            if (Number(p.asset_1_supply) < 100 || Number(p.asset_2_supply) < 100) continue
+            addrSet.add(p.address)
+          }
+        } catch {}
+      }
+    }, 3, 100)
+  } catch {}
+  return [...addrSet]
+}
+
+// Fetch with retry-on-429. Tinyman analytics rate-limits aggressive scans.
+// 404s (Tinyman's analytics doesn't index every V2 pool Vestige returns) and
+// 429s are both expected edge cases — the caller just treats them as misses.
+// Generic fetch with 429 retry + exponential backoff. Used for both Tinyman
+// analytics and Vestige pools — both rate-limit aggressive clients.
+async function fetchWithRetry(url, maxRetries = 5, baseMs = 800) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    let res
+    try { res = await fetch(url) }
+    catch { return { ok: false, status: 0, json: async () => ({}) } }
+    if (res.status === 429) {
+      const delay = baseMs * Math.pow(2, attempt) + Math.random() * 400
+      await new Promise(r => setTimeout(r, delay))
+      continue
+    }
+    return res
+  }
+  return { ok: false, status: 429, json: async () => ({}) }
+}
+
+const fetchAnalytics = (url) => fetchWithRetry(url, 5, 800)
+const fetchVestige = (url) => fetchWithRetry(url, 4, 500)
+
+// Returns the pool, null for a miss, or NOT_FOUND when Tinyman analytics
+// doesn't index the address at all (404) — only that case is safe to skip.
+const NOT_FOUND = Symbol('notFound')
+
 async function fetchV2PoolByAddress(poolAddr) {
   try {
-    const res = await fetch(`${ANALYTICS_API}/pools/${poolAddr}/`)
+    const res = await fetchAnalytics(`${ANALYTICS_API}/pools/${poolAddr}/`)
+    if (res.status === 404) return NOT_FOUND
     if (!res.ok) return null
     const data = await res.json()
     const apy = Number(data.total_annual_percentage_yield) || 0
@@ -393,21 +469,66 @@ async function fetchV2PoolByAddress(poolAddr) {
   } catch { return null }
 }
 
-// Fetch top pools for opportunities section, ranked by 7D APY (incl. gov/staking rewards)
-export async function fetchTopPools() {
-  const cached = loadTopPoolsCache()
-  if (cached) return cached
+// Dead-address cache: pool addresses that returned 404 from Tinyman analytics.
+// These never come back, so we skip them on subsequent scans.
+const DEAD_ADDRS_KEY = 'topPoolsDeadAddrs_v2' // v1 wrongly held transient failures
+const DEAD_ADDRS_TTL_MS = 24 * 60 * 60_000 // 24 hours
 
+function loadDeadAddrs() {
+  try {
+    const raw = localStorage.getItem(DEAD_ADDRS_KEY)
+    if (!raw) return new Set()
+    const { expires, addrs } = JSON.parse(raw)
+    if (expires > Date.now()) return new Set(addrs)
+  } catch {}
+  return new Set()
+}
+function saveDeadAddrs(set) {
+  try {
+    localStorage.setItem(DEAD_ADDRS_KEY, JSON.stringify({
+      expires: Date.now() + DEAD_ADDRS_TTL_MS,
+      addrs: [...set],
+    }))
+  } catch {}
+}
+
+// Dedupe concurrent calls (React StrictMode double-invokes effects in dev,
+// and re-renders can trigger the same fetch multiple times in prod too).
+let _topPoolsInflight = null
+
+// fetchTopPools takes an optional onUpdate callback that fires each time new
+// pools are merged in, letting the UI render V1 + Pact instantly (<1s) while
+// V2 pools trickle in progressively over the following 10-30s.
+export async function fetchTopPools(onUpdate) {
+  const cached = loadTopPoolsCache()
+  if (cached) {
+    onUpdate?.(cached)
+    return cached
+  }
+  if (_topPoolsInflight) return _topPoolsInflight
+  _topPoolsInflight = _fetchTopPoolsImpl(onUpdate)
+    .finally(() => { _topPoolsInflight = null })
+  return _topPoolsInflight
+}
+
+// Merge a batch of pools into the running list, resort, take top 15, emit.
+function _emit(pools, onUpdate) {
+  pools.sort((a, b) => b.apy - a.apy)
+  onUpdate?.(pools.slice(0, 15))
+}
+
+async function _fetchTopPoolsImpl(onUpdate) {
   const pools = []
   const v2Addrs = []
+  const deadAddrs = loadDeadAddrs()
 
-  // Tinyman V1 — listing endpoint returns pools sorted by TVL with full APY data.
-  // Scan the top ~200 (by TVL) and keep any with meaningful APY.
-  // Each V1 pool row also carries a `v2_address` when a V2 counterpart exists —
-  // we harvest those addresses here to drive V2 discovery below.
-  try {
-    const res = await fetch(`${ANALYTICS_API}/pools/?limit=200&ordering=-liquidity_in_usd`)
-    if (res.ok) {
+  // Kick off V1, Pact, and Vestige asset discovery in parallel — all three
+  // are single-request flows, so they race to first-paint.
+
+  const v1Promise = (async () => {
+    try {
+      const res = await fetch(`${ANALYTICS_API}/pools/?limit=200&ordering=-liquidity_in_usd`)
+      if (!res.ok) return
       const data = await res.json()
       ;(data.results || []).forEach(p => {
         if (p.v2_address) v2Addrs.push(p.v2_address)
@@ -421,43 +542,65 @@ export async function fetchTopPools() {
           url: p.address ? `https://app.tinyman.org/pool/${p.address}` : null,
         })
       })
-    }
-  } catch {}
+      _emit(pools, onUpdate)
+    } catch {}
+  })()
 
-  // Tinyman V2 — analytics API has no V2 listing, but each V1 pool row exposes
-  // a `v2_address` for its V2 counterpart. Fetch those addresses in parallel
-  // (bounded) to pick up V2 pools that are ranked by their V1 pair's TVL.
-  try {
-    const v2 = await mapPool(v2Addrs, fetchV2PoolByAddress, 10)
-    pools.push(...v2.filter(Boolean))
-  } catch {}
-
-  // Pact — direct API listing (supports APR ordering)
-  try {
-    const res = await fetch('https://api.pact.fi/api/pools?limit=15&ordering=-apr_7d&is_verified=true')
-    if (res.ok) {
+  const pactPromise = (async () => {
+    try {
+      const res = await fetch('https://api.pact.fi/api/pools?limit=500')
+      if (!res.ok) return
       const data = await res.json()
-      ;(data.results || [])
+      const pactPools = (data.results || [])
         .filter(p => Number(p.tvl_usd) > 1000 && Number(p.apr_7d) > 0)
-        .forEach(p => {
-          const pair = `${p.primary_asset?.unit_name || '?'} / ${p.secondary_asset?.unit_name || '?'}`
-          if (pools.some(ep => ep.pair === pair && ep.platform === 'Pact')) return
-          pools.push({
-            pair,
-            apy: Number(p.apr_7d) || 0,
-            tvl: Number(p.tvl_usd) || 0,
-            platform: 'Pact',
-            url: p.on_chain_id ? `https://app.pact.fi/add-liquidity/${p.on_chain_id}` : null,
-          })
+        .sort((a, b) => Number(b.apr_7d) - Number(a.apr_7d))
+        .slice(0, 20)
+      for (const p of pactPools) {
+        const pair = `${p.primary_asset?.unit_name || '?'} / ${p.secondary_asset?.unit_name || '?'}`
+        if (pools.some(ep => ep.pair === pair && ep.platform === 'Pact')) continue
+        pools.push({
+          pair,
+          apy: Number(p.apr_7d) || 0,
+          tvl: Number(p.tvl_usd) || 0,
+          platform: 'Pact',
+          url: p.on_chain_id ? `https://app.pact.fi/add-liquidity/${p.on_chain_id}` : null,
         })
-    }
+      }
+      _emit(pools, onUpdate)
+    } catch {}
+  })()
+
+  const vestigePromise = discoverV2AddressesFromVestige().catch(() => [])
+
+  // Wait for V1 + Pact (both fast) so user sees populated UI ASAP.
+  await Promise.all([v1Promise, pactPromise])
+
+  // Now drain V2 addresses progressively. Tinyman analytics is slow + rate-
+  // limited, so we emit after every successful hit.
+  try {
+    const vestigeAddrs = await vestigePromise
+    const allV2 = [...new Set([...v2Addrs, ...vestigeAddrs])]
+      .filter(addr => !deadAddrs.has(addr))
+
+    let emitCounter = 0
+    await mapPool(allV2, async (addr) => {
+      const pool = await fetchV2PoolByAddress(addr)
+      if (pool === NOT_FOUND) {
+        // Only 404s are permanent. Rate limits, network errors, and low-TVL
+        // pools are transient, so they get retried on the next scan.
+        deadAddrs.add(addr)
+      } else if (pool) {
+        pools.push(pool)
+        // Emit every 3 successful hits to avoid UI thrash
+        if (++emitCounter % 3 === 0) _emit(pools, onUpdate)
+      }
+    }, 2, 150)
+    saveDeadAddrs(deadAddrs)
   } catch {}
 
-  // Sort by APY descending, return top 15
+  _emit(pools, onUpdate)
   pools.sort((a, b) => b.apy - a.apy)
   const top = pools.slice(0, 15)
-  // Only cache non-empty results so a transient API failure doesn't hide the
-  // section for the next 5 minutes.
   if (top.length > 0) saveTopPoolsCache(top)
   return top
 }
