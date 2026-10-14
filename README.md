@@ -8,9 +8,9 @@ Live at **[retireonalgo.com](https://retireonalgo.com)**.
 
 ## What it does
 
-- **Connect your wallet** and see every liquidity position you hold across Algorand DEXes in one place (Tinyman V2 and Pact today, more to follow).
+- **Connect your wallet** (Pera, Defly, Lute, or Kibisis) and see every liquidity position you hold across Algorand DEXes in one place (Tinyman V2 and Pact today, more to follow).
 - **Summary strip** — total portfolio value, active pools, and $Retire held at a glance.
-- **Top Opportunities** — the highest-APR pools on Algorand, ranked live from the Tinyman Analytics API and the Pact API. Unlocked by holding $Retire.
+- **Top Opportunities** — the highest-APR pools on Algorand, ranked live from Tinyman Analytics, Vestige, and the Pact API. Unlocked by holding $Retire. See [how it works](docs/top-opportunities-architecture.md).
 - **Get $Retire** — direct swap links to Tinyman and Vestige.
 
 ## Why
@@ -22,10 +22,10 @@ Algorand DeFi is growing but scattered — users have to jump between Tinyman, P
 - **React 19 + Vite 8** — client-only SPA, no backend
 - **[algosdk](https://github.com/algorand/js-algorand-sdk)** — chain reads via public Algonode endpoints
 - **[@tinymanorg/tinyman-js-sdk](https://github.com/tinymanorg/tinyman-js-sdk)** — Tinyman V2 pool data
-- **[@txnlab/use-wallet](https://github.com/TxnLab/use-wallet) + [@perawallet/connect](https://github.com/perawallet/connect)** — wallet integration
+- **[@txnlab/use-wallet](https://github.com/TxnLab/use-wallet) + [@perawallet/connect](https://github.com/perawallet/connect)** — wallet integration (Pera, Defly, Lute, Kibisis)
 - **Cloudflare Pages** — hosting
 
-No custom backend. All data comes from official SDKs and public APIs (Tinyman Analytics, Pact API, NFD, Algonode).
+No custom backend. All data comes from official SDKs and public APIs (Tinyman Analytics, Vestige, Pact API, NFD, Algonode).
 
 ## Roadmap
 

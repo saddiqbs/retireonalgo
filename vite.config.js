@@ -17,4 +17,15 @@ export default defineConfig({
       transformMixedEsModules: true,
     },
   },
+  // @txnlab/use-wallet dynamically imports each wallet adapter at connect time.
+  // Vite needs them pre-bundled, otherwise the dynamic import fails with
+  // "Failed to fetch dynamically imported module".
+  optimizeDeps: {
+    include: [
+      '@perawallet/connect',
+      '@blockshake/defly-connect',
+      'lute-connect',
+      '@agoralabs-sh/avm-web-provider',
+    ],
+  },
 })

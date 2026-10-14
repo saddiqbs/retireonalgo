@@ -7,9 +7,23 @@ const RETIRE_DECIMALS = 6
 const INDEXER_BASE = 'https://mainnet-idx.algonode.cloud'
 
 const manager = new WalletManager({
-  wallets: [{ id: WalletId.PERA, options: { shouldShowSignTxnToast: false } }],
+  wallets: [
+    { id: WalletId.PERA, options: { shouldShowSignTxnToast: false } },
+    WalletId.DEFLY,
+    WalletId.LUTE,
+    WalletId.KIBISIS,
+  ],
   network: NetworkId.MAINNET
 })
+
+// Display metadata for the wallet picker. Keep order consistent with the
+// manager config above so the UI mirrors the install order.
+const WALLET_OPTIONS = [
+  { id: WalletId.PERA,    label: 'Pera' },
+  { id: WalletId.DEFLY,   label: 'Defly' },
+  { id: WalletId.LUTE,    label: 'Lute' },
+  { id: WalletId.KIBISIS, label: 'Kibisis' },
+]
 
 async function getRetireBalance(address) {
   try {
@@ -50,7 +64,10 @@ export default function App() {
     const saved = localStorage.getItem('connectedWallets')
     if (!saved) return []
     const parsed = JSON.parse(saved)
-    return parsed.filter(w => w && typeof w === 'object' && w.address && w.name)
+    return parsed
+      .filter(w => w && typeof w === 'object' && w.address && w.name)
+      // Migrate legacy entries (saved before multi-wallet support) to Pera.
+      .map(w => ({ ...w, walletId: w.walletId || WalletId.PERA }))
   } catch { return [] }
 })
   const [isExpanded, setIsExpanded] = useState(false)
@@ -59,11 +76,13 @@ export default function App() {
   const [loadingPositions, setLoadingPositions] = useState(false)
   const [topPools, setTopPools] = useState([])
   const [showPoolCount, setShowPoolCount] = useState(3)
+  const [showWalletPicker, setShowWalletPicker] = useState(false)
 
   useEffect(() => {
-    // Don't clobber a populated list if a subsequent fetch returns empty
-    // (transient analytics API failures shouldn't hide the section).
-    fetchTopPools().then(pools => {
+    // Progressive: V1 + Pact paint instantly, V2 pools fill in as they load.
+    // onUpdate fires throughout; guard against empty so a transient failure
+    // doesn't wipe a populated section.
+    fetchTopPools(pools => {
       if (pools && pools.length > 0) setTopPools(pools)
     })
   }, [])
@@ -92,37 +111,45 @@ export default function App() {
   setWallets(list)
 }
 
-  async function connectWallet() {
+  async function connectWallet(walletId) {
   try {
     await manager.resumeSessions()
-    const wallet = manager.getWallet(WalletId.PERA)
+    const wallet = manager.getWallet(walletId)
+    if (!wallet) throw new Error(`Wallet ${walletId} not available`)
     await wallet.connect()
     const accounts = wallet.accounts.map(a => a.address)
     const existing = wallets.map(w => w.address)
     const newAddrs = accounts.filter(a => !existing.includes(a))
     const newWallets = await Promise.all(newAddrs.map(async addr => ({
       address: addr,
+      walletId,
       name: (await getNFDName(addr)) || shortAddress(addr)
     })))
     const updated = [...wallets, ...newWallets]
     saveWallets(updated)
+    setShowWalletPicker(false)
   } catch (e) { console.error('Connect failed', e) }
 }
 
   function removeWallet(addr) {
+    const removed = wallets.find(w => w.address === addr)
     const updated = wallets.filter(w => w.address !== addr)
     saveWallets(updated)
-    if (updated.length === 0) {
-      manager.getWallet(WalletId.PERA)?.disconnect()
-      setIsExpanded(false)
+    // If no other addresses remain from the same wallet provider, disconnect
+    // that provider's session.
+    if (removed && !updated.some(w => w.walletId === removed.walletId)) {
+      manager.getWallet(removed.walletId)?.disconnect()
     }
+    if (updated.length === 0) setIsExpanded(false)
   }
 
   function disconnectAll() {
     localStorage.removeItem('connectedWallets')
+    // Disconnect every provider we've ever connected to in this session.
+    const usedIds = new Set(wallets.map(w => w.walletId).filter(Boolean))
+    for (const id of usedIds) manager.getWallet(id)?.disconnect()
     setWallets([])
     setIsExpanded(false)
-    manager.getWallet(WalletId.PERA)?.disconnect()
   }
 return (
     <div>
@@ -136,7 +163,7 @@ return (
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           {wallets.length === 0 ? (
-            <button onClick={connectWallet} style={{
+            <button onClick={() => setShowWalletPicker(true)} style={{
               background: '#1a1830', border: '1px solid #534AB7', color: '#AFA9EC',
               padding: '8px 20px', borderRadius: '20px', fontSize: '14px', cursor: 'pointer'
            }}>Connect wallet</button>
@@ -172,7 +199,7 @@ return (
               </div>
               {isExpanded && (
                 <div style={{ display: 'flex', gap: '8px' }}>
-                  <button onClick={connectWallet} style={{
+                  <button onClick={() => setShowWalletPicker(true)} style={{
                     background: '#1a1830', border: '1px solid #534AB7', color: '#AFA9EC',
                     padding: '6px 14px', borderRadius: '20px', fontSize: '13px', cursor: 'pointer'
                   }}>+ Add wallet</button>
@@ -193,7 +220,7 @@ return (
               Your Algorand DeFi dashboard
             </h1>
             <p style={{ fontSize: '15px', color: '#534AB7', lineHeight: 1.7, maxWidth: '400px', margin: '0 auto' }}>
-              Connect your Pera wallet to see your positions, earnings, and the best pool opportunities on Algorand.
+              Connect your Pera, Defly, Lute, or Kibisis wallet to see your positions, earnings, and the best pool opportunities on Algorand.
             </p>
           </div>
         ) : (
@@ -396,6 +423,37 @@ return (
           </div>
         </div>
       </div>
+
+      {/* Wallet picker modal */}
+      {showWalletPicker && (
+        <div onClick={() => setShowWalletPicker(false)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: '#12111f', border: '1px solid #2a2840', borderRadius: '16px',
+            padding: '24px', minWidth: '280px', maxWidth: '90vw',
+          }}>
+            <div style={{ fontSize: '16px', fontWeight: 500, color: '#CECBF6', marginBottom: '16px' }}>
+              Connect a wallet
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {WALLET_OPTIONS.map(w => (
+                <button key={w.id} onClick={() => connectWallet(w.id)} style={{
+                  background: '#1a1830', border: '1px solid #2a2840', color: '#AFA9EC',
+                  padding: '12px 16px', borderRadius: '10px', fontSize: '14px',
+                  cursor: 'pointer', textAlign: 'left',
+                }}>{w.label}</button>
+              ))}
+            </div>
+            <button onClick={() => setShowWalletPicker(false)} style={{
+              marginTop: '16px', width: '100%',
+              background: 'transparent', border: 'none', color: '#534AB7',
+              padding: '8px', fontSize: '13px', cursor: 'pointer',
+            }}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
